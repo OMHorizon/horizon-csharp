@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace HorizonChat.Services;
 
 public class UserService
@@ -20,7 +22,8 @@ public class UserService
 
     public string GenerateGuestUsername()
     {
-        var random = new Random();
-        return $"Guest{random.Next(1000, 9999)}";
+        // Use cryptographically secure random number generator
+        var guestNumber = RandomNumberGenerator.GetInt32(1000, 10000);
+        return $"Guest{guestNumber}";
     }
 }
