@@ -1,0 +1,108 @@
+@page "/welcome"
+@using HorizonChat.Services
+@inject UserService UserService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Welcome - HorizonChat</PageTitle>
+
+<div class="welcome-container">
+    <div class="welcome-card">
+        <h1 class="welcome-title">Welcome to HorizonChat! 👋</h1>
+        <p class="welcome-subtitle">Choose a username to get started</p>
+        
+        <div class="username-input-group">
+            <label for="username" class="form-label">Enter your username:</label>
+            <input 
+                id="username"
+                type="text" 
+                class="form-control username-input" 
+                @bind="username" 
+                @bind:event="oninput"
+                @onkeypress="HandleKeyPress"
+                placeholder="Your username..."
+                maxlength="20" />
+            
+            @if (!string.IsNullOrWhiteSpace(validationMessage))
+            {
+                <div class="validation-message">@validationMessage</div>
+            }
+        </div>
+
+        <div class="button-group">
+            <button class="btn btn-primary btn-lg enter-chat-btn" @onclick="EnterChat" disabled="@(!IsValidUsername())">
+                Enter Chat
+            </button>
+            <button class="btn btn-secondary btn-lg" @onclick="UseGuestName">
+                Use Guest Name
+            </button>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(guestNamePreview))
+        {
+            <div class="guest-name-preview">
+                Guest name will be: <strong>@guestNamePreview</strong>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private string username = string.Empty;
+    private string validationMessage = string.Empty;
+    private string guestNamePreview = string.Empty;
+
+    private bool IsValidUsername()
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return false;
+        }
+
+        if (username.Length < 2)
+        {
+            validationMessage = "Username must be at least 2 characters long";
+            return false;
+        }
+
+        if (username.Length > 20)
+        {
+            validationMessage = "Username must be less than 20 characters";
+            return false;
+        }
+
+        validationMessage = string.Empty;
+        return true;
+    }
+
+    private void HandleKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && IsValidUsername())
+        {
+            EnterChat();
+        }
+    }
+
+    private void EnterChat()
+    {
+        if (IsValidUsername())
+        {
+            UserService.Username = username.Trim();
+            NavigationManager.NavigateTo("/chat");
+        }
+    }
+
+    private void UseGuestName()
+    {
+        var guestName = UserService.GenerateGuestUsername();
+        guestNamePreview = guestName;
+        username = guestName;
+        StateHasChanged();
+        
+        // Auto-enter after a brief delay
+        Task.Delay(500).ContinueWith(_ =>
+        {
+            UserService.Username = guestName;
+            InvokeAsync(() => NavigationManager.NavigateTo("/chat"));
+        });
+    }
+}
