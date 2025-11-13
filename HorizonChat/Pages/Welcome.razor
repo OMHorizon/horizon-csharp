@@ -3,11 +3,11 @@
 @inject UserService UserService
 @inject NavigationManager NavigationManager
 
-<PageTitle>Welcome - HorizonChat</PageTitle>
+<PageTitle>Welcome - App CFL</PageTitle>
 
 <div class="welcome-container">
     <div class="welcome-card">
-        <h1 class="welcome-title">Welcome to HorizonChat! 👋</h1>
+        <h1 class="welcome-title">Welcome to App CFL! 👋</h1>
         <p class="welcome-subtitle">Choose a username to get started</p>
         
         <div class="username-input-group">
@@ -98,11 +98,15 @@
         username = guestName;
         StateHasChanged();
         
-        // Auto-enter after a brief delay
-        Task.Delay(500).ContinueWith(_ =>
+        // Auto-enter after a brief delay - use proper async handling
+        _ = Task.Run(async () =>
         {
-            UserService.Username = guestName;
-            InvokeAsync(() => NavigationManager.NavigateTo("/chat"));
+            await Task.Delay(500);
+            await InvokeAsync(() =>
+            {
+                UserService.Username = guestName;
+                NavigationManager.NavigateTo("/chat");
+            });
         });
     }
 }

@@ -5,13 +5,15 @@
 @inject UserService UserService
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
+@inject ILogger<Chat> Logger
+@inject IConfiguration Configuration
 @implements IAsyncDisposable
 
-<PageTitle>Chat - HorizonChat</PageTitle>
+<PageTitle>Chat - App CFL</PageTitle>
 
 <div class="chat-container">
     <div class="chat-header">
-        <h2>HorizonChat</h2>
+        <h2>App CFL</h2>
         <div class="user-info">
             <span class="username-badge">@UserService.Username</span>
         </div>
@@ -59,11 +61,14 @@
 </div>
 
 @code {
+    private const int BufferSize = 1024 * 4;
+    private const string MessageDelimiter = ": ";
+    
     private ElementReference messagesContainer;
     private ClientWebSocket? webSocket;
-    private List<ChatMessage> messages = new();
+    private readonly List<ChatMessage> messages = new();
     private string currentMessage = string.Empty;
-    private bool isConnected = false;
+    private bool isConnected;
     private CancellationTokenSource? cancellationTokenSource;
 
     protected override async Task OnInitializedAsync()
@@ -75,75 +80,89 @@
             return;
         }
 
-        await ConnectToWebSocket();
+        await ConnectToWebSocketAsync();
     }
 
-    private async Task ConnectToWebSocket()
+    private async Task ConnectToWebSocketAsync()
     {
         try
         {
             webSocket = new ClientWebSocket();
             cancellationTokenSource = new CancellationTokenSource();
             
-            var uri = new Uri($"ws://localhost:5000/ws");
+            // Use configuration instead of hardcoded URL
+            var wsUrl = Configuration["WebSocketUrl"] ?? "ws://localhost:5000/ws";
+            var uri = new Uri(wsUrl);
+            
             await webSocket.ConnectAsync(uri, cancellationTokenSource.Token);
             isConnected = true;
             StateHasChanged();
 
-            // Start receiving messages
-            _ = ReceiveMessages();
+            // Start receiving messages - properly handle async operation
+            _ = Task.Run(async () => await ReceiveMessagesAsync(), cancellationTokenSource.Token);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"WebSocket connection error: {ex.Message}");
+            Logger.LogError(ex, "WebSocket connection error");
             isConnected = false;
         }
     }
 
-    private async Task ReceiveMessages()
+    private async Task ReceiveMessagesAsync()
     {
-        var buffer = new byte[1024 * 4];
+        var buffer = new byte[BufferSize];
         
         try
         {
-            while (webSocket?.State == WebSocketState.Open && cancellationTokenSource?.Token.IsCancellationRequested == false)
+            while (webSocket?.State == WebSocketState.Open && 
+                   cancellationTokenSource is { IsCancellationRequested: false })
             {
-                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationTokenSource.Token);
+                var result = await webSocket.ReceiveAsync(
+                    new ArraySegment<byte>(buffer), 
+                    cancellationTokenSource.Token);
                 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
                     var messageText = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    
-                    // Parse message format: "username: message"
-                    var parts = messageText.Split(new[] { ": " }, 2, StringSplitOptions.None);
-                    var username = parts.Length > 1 ? parts[0] : "Unknown";
-                    var content = parts.Length > 1 ? parts[1] : messageText;
-                    
-                    messages.Add(new ChatMessage
-                    {
-                        Username = username,
-                        Content = content,
-                        Timestamp = DateTime.Now,
-                        IsOwnMessage = username == UserService.Username
-                    });
+                    ProcessReceivedMessage(messageText);
                     
                     await InvokeAsync(StateHasChanged);
-                    await ScrollToBottom();
+                    await ScrollToBottomAsync();
                 }
                 else if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    await CloseWebSocketAsync(WebSocketCloseStatus.NormalClosure, "Server closed connection");
                     isConnected = false;
                     await InvokeAsync(StateHasChanged);
                 }
             }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            Console.WriteLine($"Error receiving message: {ex.Message}");
+            Logger.LogInformation("WebSocket receive operation was cancelled");
+        }
+        catch (WebSocketException ex)
+        {
+            Logger.LogError(ex, "Error receiving WebSocket message");
             isConnected = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private void ProcessReceivedMessage(string messageText)
+    {
+        // Parse message format: "username: message"
+        var parts = messageText.Split(MessageDelimiter, 2, StringSplitOptions.None);
+        var username = parts.Length > 1 ? parts[0] : "Unknown";
+        var content = parts.Length > 1 ? parts[1] : messageText;
+        
+        messages.Add(new ChatMessage
+        {
+            Username = username,
+            Content = content,
+            Timestamp = DateTime.Now,
+            IsOwnMessage = username == UserService.Username
+        });
     }
 
     private async Task SendMessage()
@@ -153,16 +172,21 @@
 
         try
         {
-            // Format: "username: message"
-            var messageToSend = $"{UserService.Username}: {currentMessage.Trim()}";
+            var messageToSend = $"{UserService.Username}{MessageDelimiter}{currentMessage.Trim()}";
             var bytes = Encoding.UTF8.GetBytes(messageToSend);
-            await webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            await webSocket.SendAsync(
+                new ArraySegment<byte>(bytes), 
+                WebSocketMessageType.Text, 
+                endOfMessage: true, 
+                CancellationToken.None);
             
             currentMessage = string.Empty;
         }
-        catch (Exception ex)
+        catch (WebSocketException ex)
         {
-            Console.WriteLine($"Error sending message: {ex.Message}");
+            Logger.LogError(ex, "Error sending message");
+            isConnected = false;
+            StateHasChanged();
         }
     }
 
@@ -174,34 +198,57 @@
         }
     }
 
-    private async Task ScrollToBottom()
+    private async Task ScrollToBottomAsync()
     {
         try
         {
-            await JSRuntime.InvokeVoidAsync("eval", 
+            await JSRuntime.InvokeVoidAsync(
+                "eval", 
                 "document.querySelector('.chat-messages').scrollTop = document.querySelector('.chat-messages').scrollHeight");
         }
-        catch { }
+        catch (JSException ex)
+        {
+            Logger.LogWarning(ex, "Failed to scroll to bottom");
+        }
+    }
+
+    private async Task CloseWebSocketAsync(WebSocketCloseStatus closeStatus, string statusDescription)
+    {
+        if (webSocket?.State == WebSocketState.Open)
+        {
+            try
+            {
+                await webSocket.CloseAsync(closeStatus, statusDescription, CancellationToken.None);
+            }
+            catch (WebSocketException ex)
+            {
+                Logger.LogWarning(ex, "Error closing WebSocket");
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        cancellationTokenSource?.Cancel();
-        
-        if (webSocket?.State == WebSocketState.Open)
+        if (cancellationTokenSource is not null)
         {
-            await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+            cancellationTokenSource.Cancel();
+            cancellationTokenSource.Dispose();
         }
         
-        webSocket?.Dispose();
-        cancellationTokenSource?.Dispose();
+        if (webSocket is not null)
+        {
+            await CloseWebSocketAsync(WebSocketCloseStatus.NormalClosure, "Component disposing");
+            webSocket.Dispose();
+        }
+
+        GC.SuppressFinalize(this);
     }
 
-    private class ChatMessage
+    private sealed class ChatMessage
     {
-        public string Username { get; set; } = string.Empty;
-        public string Content { get; set; } = string.Empty;
-        public DateTime Timestamp { get; set; }
-        public bool IsOwnMessage { get; set; }
+        public required string Username { get; init; }
+        public required string Content { get; init; }
+        public DateTime Timestamp { get; init; }
+        public bool IsOwnMessage { get; init; }
     }
 }
